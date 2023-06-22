@@ -75,7 +75,7 @@ def findNeighborhoods(particles, allParticles, support):
     fluidRadialDistances /= support
     
     # Modify the neighbor list so that everything points to the original particles
-    particleIndices = torch.arange(particles.shape[0])
+    particleIndices = torch.arange(particles.shape[0]).to(particles.device)
     stackedIndices = torch.hstack((particleIndices, particleIndices, particleIndices))
     fluidNeighbors[1,:] = stackedIndices[fluidNeighbors[1,:]]    
     
