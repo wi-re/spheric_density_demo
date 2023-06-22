@@ -22,6 +22,7 @@ from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.typing import Adj, OptPairTensor, OptTensor, Size
 from torch_geometric.utils.repeat import repeat
 import torch
+from torch_sparse import SparseTensor
 from torch import Tensor, nn
 from torch.nn import Parameter
 
@@ -401,6 +402,34 @@ class RbfConv(MessagePassing):
         return (f'{self.__class__.__name__}({self.in_channels}, '
                 f'{self.out_channels}, dim={self.dim})')
     
+    def __check_input__(self, edge_index, size):
+        the_size: List[Optional[int]] = [None, None]
+
+        if isinstance(edge_index, Tensor):
+            assert edge_index.dtype == torch.long
+            assert edge_index.dim() == 2
+            assert edge_index.size(0) == 2
+            if size is not None:
+                the_size[0] = size[0]
+                the_size[1] = size[1]
+            return the_size
+
+        elif isinstance(edge_index, SparseTensor):
+            if self.flow == 'target_to_source':
+                raise ValueError(
+                    ('Flow direction "target_to_source" is invalid for '
+                     'message propagation via `torch_sparse.SparseTensor`. If '
+                     'you really want to make use of a reverse message '
+                     'passing flow, pass in the transposed sparse tensor to '
+                     'the message passing module, e.g., `adj_t.t()`.'))
+            the_size[0] = edge_index.sparse_size(1)
+            the_size[1] = edge_index.sparse_size(0)
+            return the_size
+
+        raise ValueError(
+            ('`MessagePassing.propagate` only supports `torch.LongTensor` of '
+             'shape `[2, num_messages]` or `torch_sparse.SparseTensor` for '
+             'argument `edge_index`.'))
     
     def propagate2(self, edge_index: Adj, size: Size = None, **kwargs):
         decomposed_layers = 1 if self.explain else self.decomposed_layers
