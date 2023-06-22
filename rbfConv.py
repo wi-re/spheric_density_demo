@@ -31,7 +31,6 @@ import math
 import numpy as np
 from typing import Any
 from typing import List, Tuple, Union
-from torch_sparse import SparseTensor
 
 def uniform(size: int, value: Any):
     if isinstance(value, Tensor):
