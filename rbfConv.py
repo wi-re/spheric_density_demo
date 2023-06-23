@@ -258,7 +258,32 @@ class RbfConv(MessagePassing):
         normalizationFactor = None,
         **kwargs
     ):
-        super().__init__(aggr=aggr, **kwargs)        
+        super().__init__(aggr=aggr, **kwargs)      
+        # self.aggr = aggr
+        # assert self.aggr in ['add', 'mean', 'max', None]
+
+        # self.flow = flow
+        # assert self.flow in ['source_to_target', 'target_to_source']
+
+        # self.node_dim = node_dim
+
+        # self.inspector = Inspector(self)
+        # self.inspector.inspect(self.message)
+        # self.inspector.inspect(self.aggregate, pop_first=True)
+        # self.inspector.inspect(self.message_and_aggregate, pop_first=True)
+        # self.inspector.inspect(self.update, pop_first=True)
+
+        self.__user_args__ = self.inspector.keys(
+            ['message', 'aggregate', 'update']).difference(self.special_args)
+        self.__fused_user_args__ = self.inspector.keys(
+            ['message_and_aggregate', 'update']).difference(self.special_args)
+
+        # Support for "fused" message passing.
+        self.fuse = self.inspector.implements('message_and_aggregate')
+
+        # Support for GNNExplainer.
+        self.__explain__ = False
+        self.__edge_mask__ = None  
         self.in_channels = in_channels
         self.out_channels = out_channels
 
@@ -361,7 +386,27 @@ class RbfConv(MessagePassing):
         # if args.cutlad:
             # out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size)
         # else:
-        out = self.propagate2(edge_index, x=x, edge_attr=edge_attr, size=size)
+        x_i, x_j = x
+        edge_weights = None
+        if not(self.windowFn is None):
+            edge_weights = self.windowFn(torch.linalg.norm(edge_attr, axis = 1))
+
+        positions = torch.hstack((edge_attr, torch.zeros(edge_attr.shape[0],1, device = edge_attr.device, dtype = edge_attr.dtype)))
+        if self.coordinateMapping == 'polar':
+            spherical = mapToSpherical(positions)
+            mapped = torch.vstack((spherical[:,0] * 2. - 1.,spherical[:,1] / np.pi)).mT
+        if self.coordinateMapping == 'cartesian':
+            mapped = edge_attr
+        if self.coordinateMapping == 'preserving':
+            cubePositions = mapToSpherePreserving(positions)
+            mapped = torch.vstack((cubePositions[:,0],cubePositions[:,1] / np.pi)).mT
+        convolution = cutlass.apply
+        out = convolution(edge_index, x_i, x_j, mapped, edge_weights, self.weight, 
+                                  x_i.shape[0], self.node_dim,
+                              self.size , self.rbfs, self.periodic, 
+                              self.batchSize[0],self.batchSize[1]) 
+
+        # out = self.propagate2(edge_index, x=x, edge_attr=edge_attr, size=size)
         
 
 #         print('out: ', out.shape, out)
@@ -499,20 +544,20 @@ class RbfConv(MessagePassing):
             decomp_out = []
 
         for i in range(decomposed_layers):
-            if decomposed_layers > 1:
-                for arg in decomp_args:
-                    kwargs[arg] = decomp_kwargs[arg][i]
+            # if decomposed_layers > 1:
+                # for arg in decomp_args:
+                    # kwargs[arg] = decomp_kwargs[arg][i]
 
-            coll_dict = self.__collect__(self.__user_args__, edge_index,
-                                            size, kwargs)
+            # coll_dict = self.__collect__(self.__user_args__, edge_index,
+                                            # size, kwargs)
 
-            msg_kwargs = self.inspector.distribute('message', coll_dict)
-            for hook in self._message_forward_pre_hooks.values():
-                res = hook(self, (msg_kwargs, ))
-                if res is not None:
-                    msg_kwargs = res[0] if isinstance(res, tuple) else res
-                    
-            aggr_kwargs = self.inspector.distribute('aggregate', coll_dict)
+            # msg_kwargs = self.inspector.distribute('message', coll_dict)
+            # for hook in self._message_forward_pre_hooks.values():
+                # res = hook(self, (msg_kwargs, ))
+                # if res is not None:
+                    # msg_kwargs = res[0] if isinstance(res, tuple) else res
+                    # 
+            # aggr_kwargs = self.inspector.distribute('aggregate', coll_dict)
             
             convolution = cutlass.apply
             
@@ -545,109 +590,23 @@ class RbfConv(MessagePassing):
                                         self.size , self.rbfs, self.periodic, 
                                         self.batchSize[0],self.batchSize[1])
 
-            for hook in self._aggregate_forward_hooks.values():
-                res = hook(self, (aggr_kwargs, ), out)
-                if res is not None:
-                    out = res
+        #     for hook in self._aggregate_forward_hooks.values():
+        #         res = hook(self, (aggr_kwargs, ), out)
+        #         if res is not None:
+        #             out = res
 
-            update_kwargs = self.inspector.distribute('update', coll_dict)
-            out = self.update(out, **update_kwargs)
+        #     update_kwargs = self.inspector.distribute('update', coll_dict)
+        #     out = self.update(out, **update_kwargs)
 
-            if decomposed_layers > 1:
-                decomp_out.append(out)
+        #     if decomposed_layers > 1:
+        #         decomp_out.append(out)
 
-            if decomposed_layers > 1:
-                out = torch.cat(decomp_out, dim=-1)
+        #     if decomposed_layers > 1:
+        #         out = torch.cat(decomp_out, dim=-1)
 
-        for hook in self._propagate_forward_hooks.values():
-            res = hook(self, (edge_index, size, kwargs), out)
-            if res is not None:
-                out = res
+        # for hook in self._propagate_forward_hooks.values():
+        #     res = hook(self, (edge_index, size, kwargs), out)
+        #     if res is not None:
+        #         out = res
 
         return out
-  
-
-# #Eval Mapping
-# x = torch.linspace(-1,1,127)
-# y = torch.linspace(-1,1,127)
-
-# xx,yy = torch.meshgrid(x,y,indexing='xy')
-
-# # debugPrint(xx)
-
-# xxf = xx.flatten()
-# yyf = yy.flatten()
-
-# mask = xxf**2 + yyf**2 <= 1
-# # xxf = xxf[mask]
-# # yyf = yyf[mask]
-
-# positions = torch.hstack((torch.vstack((xxf, yyf)).mT, torch.zeros(xxf.shape[0],1, device = xxf.device, dtype = xxf.dtype)))
-# cylinderPositions = ballToCylinder(positions)
-# cubePositions = cylinderToCube(cylinderPositions)
-
-# debugPrint(torch.min(cubePositions[mask,0]))
-# debugPrint(torch.min(cubePositions[mask,1]))
-# debugPrint(torch.max(cubePositions[mask,0]))
-# debugPrint(torch.max(cubePositions[mask,1]))
-
-
-# fig, axis = plt.subplots(1, 3, figsize=(15,5), sharex = False, sharey = False, squeeze = False)
-
-# # pc = axis[0,0].tripcolor(xxf,yyf, (cubePositions[:,0]))
-# pc = axis[0,0].pcolormesh(xx,yy, (cubePositions[:,0]).reshape(xx.shape))
-# ax1_divider = make_axes_locatable(axis[0,0])
-# cax1 = ax1_divider.append_axes("right", size="7%", pad="2%")
-# predCbar = fig.colorbar(pc, cax=cax1,orientation='vertical')
-# predCbar.ax.tick_params(labelsize=8) 
-# axis[0,0].axis('equal')
-
-# # pc = axis[0,1].tripcolor(xxf,yyf, (cubePositions[:,1]))
-# pc = axis[0,1].pcolormesh(xx,yy, (cubePositions[:,1]).reshape(xx.shape))
-# ax1_divider = make_axes_locatable(axis[0,1])
-# cax1 = ax1_divider.append_axes("right", size="7%", pad="2%")
-# predCbar = fig.colorbar(pc, cax=cax1,orientation='vertical')
-# predCbar.ax.tick_params(labelsize=8) 
-# axis[0,1].axis('equal')
-
-# # pc = axis[0,2].tripcolor(xxf,yyf, torch.linalg.norm(positions - cubePositions, dim = 1))
-# pc = axis[0,2].pcolormesh(xx,yy, (torch.linalg.norm(positions - cubePositions, dim = 1)).reshape(xx.shape))
-# ax1_divider = make_axes_locatable(axis[0,2])
-# cax1 = ax1_divider.append_axes("right", size="7%", pad="2%")
-# predCbar = fig.colorbar(pc, cax=cax1,orientation='vertical')
-# predCbar.ax.tick_params(labelsize=8) 
-# axis[0,2].axis('equal')
-
-# fig.tight_layout()
-
-
-# spherePositions = mapToSpherical(positions)
-# spherePositions[:,1:] =  spherePositions[:,1:] / np.pi
-
-# fig, axis = plt.subplots(1, 3, figsize=(15,5), sharex = False, sharey = False, squeeze = False)
-
-# # pc = axis[0,0].tripcolor(xxf,yyf, (cubePositions[:,0]))
-# pc = axis[0,0].pcolormesh(xx,yy, (spherePositions[:,0]).reshape(xx.shape))
-# ax1_divider = make_axes_locatable(axis[0,0])
-# cax1 = ax1_divider.append_axes("right", size="7%", pad="2%")
-# predCbar = fig.colorbar(pc, cax=cax1,orientation='vertical')
-# predCbar.ax.tick_params(labelsize=8) 
-# axis[0,0].axis('equal')
-
-# # pc = axis[0,1].tripcolor(xxf,yyf, (cubePositions[:,1]))
-# pc = axis[0,1].pcolormesh(xx,yy, (spherePositions[:,1]).reshape(xx.shape), cmap = cm.twilight)
-# ax1_divider = make_axes_locatable(axis[0,1])
-# cax1 = ax1_divider.append_axes("right", size="7%", pad="2%")
-# predCbar = fig.colorbar(pc, cax=cax1,orientation='vertical')
-# predCbar.ax.tick_params(labelsize=8) 
-# axis[0,1].axis('equal')
-
-# # pc = axis[0,1].tripcolor(xxf,yyf, (cubePositions[:,1]))
-# pc = axis[0,2].pcolormesh(xx,yy, (torch.linalg.norm(positions[:,:2] - spherePositions[:,:2] , dim = 1)).reshape(xx.shape))
-# ax1_divider = make_axes_locatable(axis[0,2])
-# cax1 = ax1_divider.append_axes("right", size="7%", pad="2%")
-# predCbar = fig.colorbar(pc, cax=cax1,orientation='vertical')
-# predCbar.ax.tick_params(labelsize=8) 
-# axis[0,2].axis('equal')
-
-# fig.tight_layout()
