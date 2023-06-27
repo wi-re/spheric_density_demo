@@ -122,7 +122,7 @@ def generate_fractal_noise_2d(
 
 # end of code from https://github.com/pvigier/perlin-numpy
 
-# Copyright 2023 <COPYRIGHT HOLDER>
+# Copyright 2023 Rene Winchenbach
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy 
 # of this software and associated documentation files (the “Software”), to deal 
